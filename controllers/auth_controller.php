@@ -190,12 +190,12 @@ class AuthController {
     }
 
     function refreshAccessToken($refreshToken) {
-        global $refreshTokenSecretKey, $secretKey, $tokenAlg;
+        global $refreshTokenSK, $secretKey, $tokenAlg;
         global $expiresIn, $refreshExpiresIn;
     
         try {
             // Giải mã refresh token
-            $decoded = JWT::decode($refreshToken, new Key($refreshTokenSecretKey, $tokenAlg));
+            $decoded = JWT::decode($refreshToken, new Key($refreshTokenSK, $tokenAlg));
             $userId = $decoded->sub;
     
             // Kiểm tra token trong database
