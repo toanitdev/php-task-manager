@@ -5,6 +5,8 @@ require_once ($_SERVER['DOCUMENT_ROOT'] . '/middleware/middleware.php');
 require_once ($_SERVER['DOCUMENT_ROOT'] . '/helper/response_helper.php');
 use Firebase\JWT\JWT;
 use Firebase\JWT\Key;
+use Kreait\Firebase\Factory;
+use Kreait\Firebase\ServiceAccount;
 
 class AuthController {
 
@@ -14,6 +16,7 @@ class AuthController {
     public function __construct() {
         $database = new Database();
         $this->conn = $database->connect();
+        $this->initializeFirebase();
     }
 
     public function createUser($data) {
@@ -33,7 +36,7 @@ class AuthController {
         }
 
 
-        $password_hash = md5($data['password']);  // Không an toàn, nên dùng password_hash()
+        $password_hash = md5($data['password']);  
         $stmt = $this->conn->prepare("
             INSERT INTO User (username, password_hash, nick_name) 
             VALUES (:username, :password_hash, :nick_name)
@@ -49,6 +52,37 @@ class AuthController {
             echo jsonResponse(500, 'Failed to create user');
             exit;
         }
+    }
+
+
+    public function createUserByGoogleAccount($email, $nickName) {
+        if (!$email || !$nickName) {
+            echo jsonResponse(403, 'Params are wrong');
+            return;
+        }
+        $stmt = $this->conn->prepare("
+        SELECT * FROM User WHERE username=:email
+        ");
+        $stmt->bindParam(':email', $email);
+        $stmt->execute();
+        $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($result)) {
+            echo jsonResponse(409, 'Account already exists');
+            exit;
+        }
+
+
+        $stmt = $this->conn->prepare("
+            INSERT INTO User (username, nick_name, account_type) 
+            VALUES (:username, :nick_name, :account_type)
+        ");
+        $googleType = "google";
+
+        $stmt->bindParam(':username', $email);
+        $stmt->bindParam(':nick_name', $nickName);
+        $stmt->bindParam(':account_type', $googleType);
+        $stmt->execute();
+        return $this->conn->lastInsertId();
     }
 
     
@@ -91,8 +125,9 @@ class AuthController {
         }
     
         // Prepare and execute the query to get the user
-        $stmt = $this->conn->prepare("SELECT * FROM User WHERE username=:username LIMIT 1");
+        $stmt = $this->conn->prepare("SELECT * FROM User WHERE username=:username and account_type =:account_type  LIMIT 1");
         $stmt->bindParam(':username', $username);
+        $stmt->bindParam(':account_type', 'user_system');
         $stmt->execute();
         
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -232,5 +267,71 @@ class AuthController {
         }
     }
     
+    private $serviceAcc;
+    private $firebase;
+
+    public function initializeFirebase() {
+        // $this->serviceAcc = ServiceAccount::fromJsonFile($_SERVER['DOCUMENT_ROOT'] . '/local/minetasky-firebase-adminsdk-fbsvc-17bc95e369.json');
+
+        // Khởi tạo Firebase Admin SDK
+        $this->firebase = (new Factory)
+            ->withServiceAccount($_SERVER['DOCUMENT_ROOT'] . '/local/minetasky-firebase-adminsdk-fbsvc-17bc95e369.json')
+            ->createAuth();
+    }
+
+    public function checkIdToken($idTokenString) {
+        try {
+            $idToken = $this->firebase->verifyIdToken($idTokenString);
+            $uid = $idToken->claims()->get('sub');
+            jsonResponse(200, 'Login by google success');
+
+        } catch (Kreait\Firebase\Exception\Auth\InvalidIdToken $e) {
+            jsonResponse(401, 'Token is invalid');
+        } catch (Exception $e) {
+            jsonResponse(500, 'Internal server error');
+        }
+    }
+
+    public function loginByGoogle($data) {
+        $idToken = $data['id_token'] ?? '';
+        if (empty($idToken)) {
+            echo jsonResponse(401, 'Id token is required');
+            return;
+        }
+        try {
+            $idToken = $this->firebase->verifyIdToken($idToken);
+            $email = $idToken->claims()->get('email');
+            $nickName = $idToken->claims()->get('name');
+            $existId = $this->isAccountExist($email);
+            if($existId != -1) {
+                echo jsonResponse(200, 'Login by google success', $this->generateLoginResponse($existId, $email));
+                return;
+            } else {
+                
+            $uid = $this->createUserByGoogleAccount($email, $nickName);
+            echo jsonResponse(200, 'Login by google success', $this->generateLoginResponse($uid, $email));
+        
+            }
+        } catch (Kreait\Firebase\Exception\Auth\InvalidIdToken $e) {
+            echo jsonResponse(401, 'Token is invalid');
+        } catch (Kreait\Firebase\Exception\Auth\FailedToVerifyToken $e) {
+            echo jsonResponse(401, 'Token is invalid');
+        } catch (Exception $e) {
+            echo jsonResponse(500, 'Internal server error');
+        }
+    }
+
+    public function isAccountExist($email) {
+        $stmt = $this->conn->prepare("
+        SELECT * FROM User WHERE username=:email
+        LIMIT 1");
+        $stmt->bindParam(':email', $email);
+        $stmt->execute();
+        $result = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($result)) {
+            return $result[0]['uid'];
+        }
+        return -1;
+    }
 }
 ?>
